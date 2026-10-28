@@ -386,6 +386,7 @@ def handle_max_iterations_exceeded(
     llm: LLM | BaseLLM,
     callbacks: list[TokenCalcHandler],
     verbose: bool = True,
+    request_within_rpm_limit: Callable[[], bool] | None = None,
 ) -> AgentFinish:
     """Handles the case when the maximum number of iterations is exceeded. Performs one more LLM call to get the final answer.
 
@@ -396,6 +397,7 @@ def handle_max_iterations_exceeded(
         llm: The LLM instance to call.
         callbacks: List of callbacks for the LLM call.
         verbose: Whether to print output.
+        request_within_rpm_limit: RPM limiter that admits each model request.
 
     Returns:
         AgentFinish with the final answer after exceeding max iterations.
@@ -415,11 +417,13 @@ def handle_max_iterations_exceeded(
         format_message_for_llm(I18N_DEFAULT.errors("force_final_answer"), role="user")
     )
 
+    enforce_rpm_limit(request_within_rpm_limit)
     answer = _call_llm_retrying_empty(
         llm,
         lambda: llm.call(messages, callbacks=callbacks),
         printer,
         verbose=verbose,
+        request_within_rpm_limit=request_within_rpm_limit,
     )
 
     formatted = format_answer(answer=answer)
@@ -523,11 +527,14 @@ def _call_llm_retrying_empty(
     call: Callable[[], Any],
     printer: Printer,
     verbose: bool,
+    request_within_rpm_limit: Callable[[], bool] | None,
 ) -> Any:
     """Make an LLM call, repeating it once if the answer came back empty.
 
     An answer is empty when it is falsy (``None``, ``""``, no tool calls) or
-    the call raised :class:`EmptyLLMResponseError` (LiteLLM streaming).
+    the call raised :class:`EmptyLLMResponseError` (LiteLLM streaming). The
+    caller admits the first request through the RPM limiter; the retry is
+    admitted here.
 
     Raises:
         EmptyLLMResponseError: If the retry was empty too.
@@ -536,6 +543,7 @@ def _call_llm_retrying_empty(
         if answer := call():
             return answer
     _report_empty_llm_answer(printer, verbose, retrying=True)
+    enforce_rpm_limit(request_within_rpm_limit)
     with contextlib.suppress(EmptyLLMResponseError):
         if answer := call():
             return answer
@@ -548,12 +556,14 @@ async def _acall_llm_retrying_empty(
     call: Callable[[], Awaitable[Any]],
     printer: Printer,
     verbose: bool,
+    request_within_rpm_limit: Callable[[], bool] | None,
 ) -> Any:
     """Async counterpart of :func:`_call_llm_retrying_empty`."""
     with contextlib.suppress(EmptyLLMResponseError):
         if answer := await call():
             return answer
     _report_empty_llm_answer(printer, verbose, retrying=True)
+    enforce_rpm_limit(request_within_rpm_limit)
     with contextlib.suppress(EmptyLLMResponseError):
         if answer := await call():
             return answer
@@ -760,6 +770,11 @@ def get_llm_response(
             ),
             printer,
             verbose=verbose,
+            request_within_rpm_limit=(
+                executor_context.request_within_rpm_limit
+                if executor_context is not None
+                else None
+            ),
         )
 
     return _setup_after_llm_call_hooks(
@@ -832,6 +847,11 @@ async def aget_llm_response(
             ),
             printer,
             verbose=verbose,
+            request_within_rpm_limit=(
+                executor_context.request_within_rpm_limit
+                if executor_context is not None
+                else None
+            ),
         )
 
     return _setup_after_llm_call_hooks(
