@@ -38,6 +38,7 @@ from crewai.llm_overlay import overlay_model_for_model
 from crewai.llms._finish_reason_utils import extract_choices_finish_reason_and_id
 from crewai.llms.base_llm import (
     BaseLLM,
+    EmptyLLMResponseError,
     JsonResponseFormat,
     LLMCallBlockedError,
     get_current_call_id,
@@ -839,7 +840,7 @@ class LLM(BaseLLM):
             str: The complete response text
 
         Raises:
-            Exception: If no content is received from the streaming response
+            EmptyLLMResponseError: If the stream carried no content and no tool calls.
         """
         full_response = ""
         last_chunk = None
@@ -1001,9 +1002,7 @@ class LLM(BaseLLM):
                         )
 
             if not full_response.strip() and len(accumulated_tool_args) == 0:
-                raise Exception(
-                    "No content received from streaming response. Received empty chunks or failed to extract content."
-                )
+                raise EmptyLLMResponseError(self.model)
 
             tool_calls = None
             try:
@@ -1120,7 +1119,7 @@ class LLM(BaseLLM):
             )
             return full_response
 
-        except LLMContextLengthExceededError:
+        except (LLMContextLengthExceededError, EmptyLLMResponseError):
             raise
         except Exception as e:
             error_msg = str(e)
